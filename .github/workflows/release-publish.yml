@@ -53,25 +53,25 @@ jobs:
           echo "Publishing package to npm"
           npm publish --access public
 
-        upload-assets:
-          needs: build-and-release
-          runs-on: ubuntu-latest
-          if: ${{ needs.build-and-release.outputs.assets_json != '[]' && needs.build-and-release.outputs.release_upload_url != '' }}
-          strategy:
-            matrix:
-              asset: ${{ fromJson(needs.build-and-release.outputs.assets_json) }}
-          steps:
-            - name: Checkout
-              uses: actions/checkout@v4
+  upload-assets:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    if: ${{ needs.build-and-release.outputs.assets_json != '[]' && needs.build-and-release.outputs.release_upload_url != '' }}
+    strategy:
+      matrix:
+        asset: ${{ fromJson(needs.build-and-release.outputs.assets_json) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Upload asset to release (manual)
-              env:
-                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: |
-                echo "Uploading ${{ matrix.asset.name }} to release"
-                curl \
-                  -X POST \
-                  -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  -H "Content-Type: application/octet-stream" \
-                  --data-binary @"${{ matrix.asset.path }}" \
-                  "${{ needs.build-and-release.outputs.release_upload_url }}?name=${{ matrix.asset.name }}"
+      - name: Upload asset to release (manual)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Uploading ${{ matrix.asset.name }} to release"
+          curl \
+            -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"${{ matrix.asset.path }}" \
+            "${{ needs.build-and-release.outputs.release_upload_url }}?name=${{ matrix.asset.name }}"
