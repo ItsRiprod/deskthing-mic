@@ -32,13 +32,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (bundle + types + go)
-        run: |
-          # Default cross-compile target (override with env vars if needed)
-          export GO_TARGET_OS=${{ env.GO_TARGET_OS || 'linux' }}
-          export GO_TARGET_ARCH=${{ env.GO_TARGET_ARCH || 'arm64' }}
-          npm run build
-
       - name: Publish to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -46,6 +39,18 @@ jobs:
           if [ -z "$NPM_TOKEN" ]; then echo "NPM_TOKEN is not set" && exit 1; fi
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
           npm publish --access public
+
+      - name: Verify npm token (diagnostic)
+        if: ${{ always() }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # This writes the token to npmrc and prints the associated npm username.
+          # It will fail early if token is invalid or lacks access.
+          if [ -z "$NPM_TOKEN" ]; then echo "NPM_TOKEN is not set" && exit 1; fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          echo "Running npm whoami to verify the token maps to the expected npm account"
+          npm whoami
 
       - name: Create or update GitHub Release
         id: create_release
