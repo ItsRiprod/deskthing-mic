@@ -53,50 +53,25 @@ jobs:
           echo "Publishing package to npm"
           npm publish --access public
 
+        upload-assets:
+          needs: build-and-release
+          runs-on: ubuntu-latest
+          if: ${{ needs.build-and-release.outputs.assets_json != '[]' && needs.build-and-release.outputs.release_upload_url != '' }}
+          strategy:
+            matrix:
+              asset: ${{ fromJson(needs.build-and-release.outputs.assets_json) }}
+          steps:
+            - name: Checkout
+              uses: actions/checkout@v4
 
-      - name: Create or update GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: ${{ github.ref_name }}
-          body: |
-            Release ${{ github.ref_name }}
-            
-            Created from package.json version ${{ steps.pkg.outputs.version }}.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Prepare job outputs (release upload URL + assets list)
-        id: set_job_outputs
-        run: |
-          set -e
-          # Build a JSON array of files under dist/lib
-          if [ -d dist/lib ]; then
-            assets_json=$(node -e "const fs=require('fs'); const a=fs.readdirSync('dist/lib').map(f=>({path:'dist/lib/'+f,name:f})); console.log(JSON.stringify(a))")
-          else
-            assets_json='[]'
-          fi
-
-          # expose outputs for downstream jobs
-          echo "release_upload_url=${{ steps.create_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
-          echo "assets_json=$assets_json" >> $GITHUB_OUTPUT
-
-  upload-assets:
-    needs: build-and-release
-    runs-on: ubuntu-latest
-    if: ${{ needs.build-and-release.outputs.assets_json != '[]' && needs.build-and-release.outputs.release_upload_url != '' }}
-    strategy:
-      matrix:
-        asset: ${{ fromJson(needs.build-and-release.outputs.assets_json) }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Upload asset to release
-        uses: actions/upload-release-asset@v2
-        with:
-          upload_url: ${{ needs.build-and-release.outputs.release_upload_url }}
-          asset_path: ${{ matrix.asset.path }}
-          asset_name: ${{ matrix.asset.name }}
-          asset_content_type: application/octet-stream
+            - name: Upload asset to release (manual)
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                echo "Uploading ${{ matrix.asset.name }} to release"
+                curl \
+                  -X POST \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary @"${{ matrix.asset.path }}" \
+                  "${{ needs.build-and-release.outputs.release_upload_url }}?name=${{ matrix.asset.name }}"
