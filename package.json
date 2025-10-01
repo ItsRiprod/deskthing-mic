@@ -1,0 +1,50 @@
+{
+  "name": "@deskthing/microphone",
+  "version": "0.9.0",
+  "description": "A simple microphone daemon and websocket wrapper for streaming audio chunks to and from the Car Thing. Some ADB configuration is required as well as access to SupervisorCTL.",
+  "keywords": [
+    "DeskThing",
+    "Microphone",
+    "Car",
+    "Thing",
+    "Car",
+    "Thing",
+    "Daemon",
+    "Car",
+    "Thing",
+    "Microphone",
+    "Access"
+  ],
+  "homepage": "https://github.com/ItsRiprod/deskthing-mic#readme",
+  "bugs": {
+    "url": "https://github.com/ItsRiprod/deskthing-mic/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ItsRiprod/deskthing-mic.git"
+  },
+  "license": "ISC",
+  "author": "Riprod",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    "./utils": "./dist/utils/index.js",
+    ".": "./dist/index.js"
+  },
+  "typesVersions": {
+    "*": {
+      "utils": ["dist/utils/index.d.ts"],
+      "*": ["dist/index.d.ts"]
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.3"
+  }
+}
