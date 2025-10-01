@@ -1,6 +1,6 @@
 {
   "name": "@deskthing/microphone",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "A simple microphone daemon and websocket wrapper for streaming audio chunks to and from the Car Thing. Some ADB configuration is required as well as access to SupervisorCTL.",
   "keywords": [
     "DeskThing",
