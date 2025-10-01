@@ -1,12 +1,13 @@
 package main
 
 import (
-    "bytes"
-    "encoding/binary"
-    "io"
-    "log"
-    "os/exec"
-    "time"
+	"bytes"
+	"encoding/binary"
+	"io"
+	"log"
+	"os/exec"
+	"strconv"
+	"time"
 )
 
 type AudioConfig struct {
@@ -31,8 +32,8 @@ func StartAudioStream(cfg AudioConfig, sendChunk func([]byte)) (*AudioSession, e
     session.cmd = exec.Command("arecord",
         "-D", "hw:0,0",
         "-f", "S16_LE",
-        "-c", "1",
-        "-r", "48000",
+        "-c", strconv.Itoa(cfg.Channels),
+        "-r", strconv.Itoa(cfg.SampleRate),
         "-t", "raw",
     )
     session.stdout, err = session.cmd.StdoutPipe()

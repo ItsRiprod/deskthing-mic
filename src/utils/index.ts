@@ -1,36 +1,181 @@
+import * as fs from 'fs/promises'
+import { join, resolve } from 'path'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+import https from 'https'
+
 export type InstallConfig = {
   adbPath?: string
   clientId?: string
+  /** Skips downloading the daemon if it doesn't exist */
+  skipDownload?: boolean
+  /** Override the daemon download path */
+  daemonPath?: string
+  skipConf?: boolean
+  skipSuperbirdConf?: boolean
+  /** Make a custom root directory rather than where this is executed from */
+  root?: string
 }
 
-export type InstallLogger = (message: string) => void
+export type InstallLogger = (message: string, error?: Error | unknown, code?: number) => void
+
+const execFileAsync = promisify(execFile)
+
+async function checkDaemonExists(daemonPath: string): Promise<boolean> {
+  try {
+    await fs.access(daemonPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function downloadDaemon(daemonPath: string): Promise<void> {
+  const releasesUrl = 'https://api.github.com/repos/ItsRiprod/deskthing-mic/releases/latest'
+  const userAgent = { 'User-Agent': 'deskthing-mic-installer' }
+
+  // Get latest release info
+  const releaseInfo: any = await new Promise((resolve, reject) => {
+    https.get(releasesUrl, { headers: userAgent }, (res) => {
+      let data = ''
+      res.on('data', chunk => data += chunk)
+      res.on('end', () => resolve(JSON.parse(data)))
+      res.on('error', reject)
+    }).on('error', reject)
+  })
+
+  // Find asset
+  const asset = releaseInfo.assets.find((a: any) => a.name === 'deskthing-daemon')
+  if (!asset) throw new Error('deskthing-daemon asset not found in latest release')
+
+  // Download asset
+  await new Promise<void>((resolve, reject) => {
+    https.get(asset.browser_download_url, { headers: userAgent }, (res) => {
+      const fileStream = fs.open(daemonPath, 'w').then(fh => {
+        res.pipe(fh.createWriteStream())
+        res.on('end', () => fh.close().then(resolve))
+        res.on('error', reject)
+      })
+    }).on('error', reject)
+  })
+}
+
+async function pushDaemon(adbPath: string, daemonPath: string): Promise<void> {
+  await execFileAsync(adbPath, ['push', daemonPath, '/usr/bin/deskthing-daemon'])
+}
+
+async function makeDaemonExecutable(adbPath: string): Promise<void> {
+  await execFileAsync(adbPath, ['shell', 'chmod', '+x', '/usr/bin/deskthing-daemon'])
+}
+
+async function pullSupervisorConf(adbPath: string, root: string): Promise<void> {
+  await execFileAsync(adbPath, ['pull', '/etc/supervisord.conf', join(root, 'supervisord.conf')])
+}
+
+async function updateSupervisorConf(skipSuperbirdConf: boolean, root: string): Promise<void> {
+  const confPath = resolve(root, 'supervisord.conf')
+  let conf = await fs.readFile(confPath, 'utf-8')
+
+  // Add deskthing-daemon program if not present
+  if (!conf.includes('[program:deskthing-daemon]')) {
+    conf += `
+[program:deskthing-daemon]
+command=/usr/bin/deskthing-daemon
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/deskthing-daemon.log
+stderr_logfile=/var/log/deskthing-daemon.err
+`
+  }
+
+  if (!skipSuperbirdConf) {
+    // Update superbird program
+    conf = conf.replace(
+      /\[program:superbird\][\s\S]*?(?=\n\[|$)/g,
+      (block) => {
+        let updated = block
+        updated = updated.replace(/autorestart\s*=\s*\w+/g, 'autorestart=false')
+        updated = updated.replace(/autostart\s*=\s*\w+/g, 'autostart=false')
+        if (!/autorestart\s*=/.test(updated)) updated += '\nautorestart=false'
+        if (!/autostart\s*=/.test(updated)) updated += '\nautostart=false'
+        return updated
+      }
+    )
+
+  }
+  await fs.writeFile(confPath, conf, 'utf-8')
+}
+
+async function pushSupervisorConf(adbPath: string, root: string): Promise<void> {
+  await execFileAsync(adbPath, ['push', join(root, 'supervisord.conf'), '/etc/supervisord.conf'])
+}
+
+async function restartSupervisorCTL(adbPath: string): Promise<void> {
+  await execFileAsync(adbPath, ['shell', 'supervisorctl', 'reread'])
+}
+
+async function cleanupFiles(daemonPath: string): Promise<void> {
+  const confPath = resolve('./supervisord.conf')
+  await fs.unlink(confPath)
+
+  // cleanup daemon if it was downloaded
+  try {
+    await fs.access(daemonPath)
+    await fs.unlink(daemonPath)
+  } catch {
+    // File doesn't exist, nothing to clean up
+  }
+}
 
 /**
- * install performs post-install configuration steps for the DeskThing microphone.
- *
- * Outline (not implemented):
- * 1) Validate `adbPath` and `clientId` inputs.
- * 2) Ensure adb is available (or fall back to env PATH).
- * 3) Configure ADB client and push any required files.
- * 4) Optionally register a SupervisorCTL service or other system hooks.
- * 5) Log progress via the provided `logger` callback.
- *
- * Implementations should throw or reject with an Error on failure.
+ * Installs the deskthing-daemon.
+ * @param config The installation configuration.
+ * @param logger The logger function.
  */
-export async function install(config: InstallConfig, logger?: InstallLogger): Promise<void> {
-  const { adbPath = 'adb', clientId = 'default_client' } = config
+export async function install(config: InstallConfig, logger: InstallLogger): Promise<void> {
+  const { adbPath = 'adb', root = resolve(__dirname, '../lib/'), skipDownload = false, skipConf = false, skipSuperbirdConf = false } = config
 
-  // make it executable
-  // adb shell chmod +x /usr/bin/deskthing-daemon
+  let daemonPath = config.daemonPath
 
-  // update supervisor config
-  // adb push ./supervisord.conf /etc/
+  if (!daemonPath) {
+    daemonPath = resolve(root, 'deskthing-daemon')
+  }
 
-  // pull supervisor conf to modify it
-  // adb pull /etc/supervisord.conf ./supervisord.conf
+  logger('Starting installation of deskthing-daemon...')
 
-  // push the daemon to /usr/bin/deskthing-daemon
-  // adb push ./deskthing-daemon /usr/bin/deskthing-daemon
+  try {
+    if (!(await checkDaemonExists(daemonPath))) {
+
+      if (skipDownload) {
+        throw new Error('deskthing-daemon does not exist and download is skipped.')
+      }
+
+      logger('Downloading deskthing-daemon...')
+      await downloadDaemon(daemonPath)
+    }
+    logger('Pushing deskthing-daemon to device...')
+    await pushDaemon(adbPath, daemonPath)
+    logger('Setting execute permissions on deskthing-daemon...')
+    await makeDaemonExecutable(adbPath)
+    if (!skipConf) {
+      logger('Configuring supervisord to manage deskthing-daemon...')
+      await pullSupervisorConf(adbPath, root)
+      logger('Updating supervisord.conf to include deskthing-daemon...')
+      await updateSupervisorConf(skipSuperbirdConf, root)
+      logger('Pushing updated supervisord.conf to device...')
+      await pushSupervisorConf(adbPath, root)
+      logger('Restarting supervisor to apply new configuration...')
+      await restartSupervisorCTL(adbPath)
+    } else {
+      logger('Skipping supervisor configuration update as per config.')
+    }
+  } catch (error) {
+    logger('Installation failed.', error)
+    throw error
+  } finally {
+    logger('Cleaning up temporary files...')
+    await cleanupFiles(daemonPath)
+  }
 }
 
 export default install

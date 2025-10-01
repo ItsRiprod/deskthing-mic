@@ -1,1 +1,2 @@
-export * from './audioManager'
+export { audioManager } from './audioManager';
+export * from './types';

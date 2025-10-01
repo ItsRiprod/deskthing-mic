@@ -28,7 +28,7 @@ async function run() {
     sourcemap: true,
     outdir,
     splitting: false,
-    minify: false,
+    minify: true,
     logLevel: 'info'
   })
 
@@ -36,14 +36,14 @@ async function run() {
   await build({
     entryPoints: [path.join(root, 'src', 'utils', 'index.ts')],
     bundle: true,
-    platform: 'browser',
+    platform: 'node',
     format: 'esm',
     target: ['es2020'],
     sourcemap: true,
     outbase: path.join(root, 'src', 'utils'),
     outdir: path.join(outdir, 'utils'),
     splitting: false,
-    minify: false,
+    minify: true,
     logLevel: 'info'
   })
 
