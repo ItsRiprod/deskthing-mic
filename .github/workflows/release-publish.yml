@@ -32,13 +32,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Publish to npm
+      - name: Sanitize token and check length (diagnostic)
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if [ -z "$NPM_TOKEN" ]; then echo "NPM_TOKEN is not set" && exit 1; fi
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-          npm publish --access public
+          printf '%s' "$NPM_TOKEN" | tr -d '\r' > ~/.npmrc
+          echo "token-length: $(wc -c < ~/.npmrc)"
 
       - name: Verify npm token (diagnostic)
         if: ${{ always() }}
@@ -51,6 +50,15 @@ jobs:
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
           echo "Running npm whoami to verify the token maps to the expected npm account"
           npm whoami
+
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then echo "NPM_TOKEN is not set" && exit 1; fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm publish --access public
+
 
       - name: Create or update GitHub Release
         id: create_release
