@@ -40,6 +40,8 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "prepublishOnly": "npm run build",
+    "release": "node -e \"const t=require('child_process'); const v=process.argv[1]||'patch'; t.execSync('npm version '+v+' -m \"Release v%s\"', {stdio:'inherit'});\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {

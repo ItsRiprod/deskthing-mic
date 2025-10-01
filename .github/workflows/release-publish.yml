@@ -1,34 +1,19 @@
-name: Build, Publish npm and Attach Daemon
+name: Publish package, create Release and attach daemon artifacts
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'If true, do not publish or attach assets (just build)'
-        required: false
-        default: 'true'
-      publish:
-        description: 'If true when manually dispatched, publish to npm as well'
-        required: false
-        default: 'false'
-      create_release:
-        description: 'If true, create a GitHub release using package.json version'
-        required: false
-        default: 'false'
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.pkg.outputs.VERSION }}
-      release_id: ${{ steps.set_outputs.outputs.release_id }}
-      assets_json: ${{ steps.set_outputs.outputs.assets_json }}
-      should_publish: ${{ steps.set_outputs.outputs.should_publish }}
+      release_upload_url: ${{ steps.set_job_outputs.outputs.release_upload_url }}
+      assets_json: ${{ steps.set_job_outputs.outputs.assets_json }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,91 +32,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Read package.json version
-        id: pkg
-        run: |
-          echo "VERSION=$(node -p \"require('./package.json').version\")" >> $GITHUB_OUTPUT
-
       - name: Build (bundle + types + go)
         run: |
-          # Default cross-compile target, overridable in workflow dispatch
+          # Default cross-compile target (override with env vars if needed)
           export GO_TARGET_OS=${{ env.GO_TARGET_OS || 'linux' }}
           export GO_TARGET_ARCH=${{ env.GO_TARGET_ARCH || 'arm64' }}
           npm run build
 
-      - name: Prepare release outputs
-        id: set_outputs
-        run: |
-          set -e
-          version=$(node -p "require('./package.json').version")
-          tag="v${version}"
-
-          # Determine release id if running from a release event
-          release_id=""
-          if [ "${{ github.event_name }}" = "release" ]; then
-            # ensure tag matches version
-            release_tag='${{ github.event.release.tag_name }}'
-            if [ "$release_tag" = "$tag" ]; then
-              release_id='${{ github.event.release.id }}'
-              should_publish=true
-            else
-              echo "Release tag ($release_tag) does not match package.json version ($tag); will not publish or attach assets."
-              should_publish=false
-            fi
-          else
-            # workflow_dispatch path
-            if [ "${{ github.event.inputs.create_release || 'false' }}" = "true" ]; then
-              owner=${{ github.repository_owner }}
-              repo=${{ github.event.repository.name || github.repository }}
-              repoName=${repo#*/}
-              # create release if it does not exist
-              status=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$owner/$repoName/releases/tags/$tag")
-              if [ "$status" -eq 200 ]; then
-                release_id=$(curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$owner/$repoName/releases/tags/$tag" | jq -r .id)
-              else
-                body=$(jq -n --arg v "$version" '{ tag_name: $v, name: ("v" + $v), body: "Release created from package.json version " + $v, draft: false, prerelease: false }')
-                release_id=$(curl -s -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/json" -d "$body" "https://api.github.com/repos/$owner/$repoName/releases" | jq -r .id)
-              fi
-            fi
-            # determine should_publish based on inputs
-            if [ "${{ github.event.inputs.publish || 'false' }}" = "true" ] && [ "${{ github.event.inputs.dry_run || 'true' }}" = "false" ]; then
-              should_publish=true
-            else
-              should_publish=false
-            fi
-          fi
-
-          # Build a JSON array of files under dist/lib
-          assets=[]
-          if [ -d dist/lib ]; then
-            assets_json=$(node -e "const fs=require('fs'); const a=fs.readdirSync('dist/lib').map(f=>({path:'dist/lib/'+f,name:f})); console.log(JSON.stringify(a))")
-          else
-            assets_json='[]'
-          fi
-
-          echo "release_id=$release_id" >> $GITHUB_OUTPUT
-          echo "assets_json=$assets_json" >> $GITHUB_OUTPUT
-          echo "should_publish=$should_publish" >> $GITHUB_OUTPUT
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    if: ${{ needs.build.outputs.should_publish == 'true' || needs.build.outputs.assets_json != '[]' }}
-    strategy:
-      matrix:
-        asset: ${{ fromJson(needs.build.outputs.assets_json) }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
       - name: Publish to npm
-        if: ${{ needs.build.outputs.should_publish == 'true' }}
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -139,11 +47,49 @@ jobs:
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
           npm publish --access public
 
+      - name: Create or update GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: ${{ github.ref_name }}
+          body: |
+            Release ${{ github.ref_name }}
+            
+            Created from package.json version ${{ steps.pkg.outputs.version }}.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare job outputs (release upload URL + assets list)
+        id: set_job_outputs
+        run: |
+          set -e
+          # Build a JSON array of files under dist/lib
+          if [ -d dist/lib ]; then
+            assets_json=$(node -e "const fs=require('fs'); const a=fs.readdirSync('dist/lib').map(f=>({path:'dist/lib/'+f,name:f})); console.log(JSON.stringify(a))")
+          else
+            assets_json='[]'
+          fi
+
+          # expose outputs for downstream jobs
+          echo "release_upload_url=${{ steps.create_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
+          echo "assets_json=$assets_json" >> $GITHUB_OUTPUT
+
+  upload-assets:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    if: ${{ needs.build-and-release.outputs.assets_json != '[]' && needs.build-and-release.outputs.release_upload_url != '' }}
+    strategy:
+      matrix:
+        asset: ${{ fromJson(needs.build-and-release.outputs.assets_json) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Upload asset to release
-        if: ${{ needs.build.outputs.release_id != '' }}
         uses: actions/upload-release-asset@v2
         with:
-          upload_url: ${{ github.api_url }}/repos/${{ github.repository }}/releases/${{ needs.build.outputs.release_id }}/assets
+          upload_url: ${{ needs.build-and-release.outputs.release_upload_url }}
           asset_path: ${{ matrix.asset.path }}
           asset_name: ${{ matrix.asset.name }}
           asset_content_type: application/octet-stream

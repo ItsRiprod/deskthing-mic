@@ -61,7 +61,7 @@ async function run() {
     const goTargetOS = process.env.GO_TARGET_OS || 'linux'
     const goTargetArch = process.env.GO_TARGET_ARCH || 'arm64'
     const archSuffix = `${goTargetOS}-${goTargetArch}`
-    const outBin = path.join(libDir, `deskthing-daemon-${goTargetArch}`)
+    const outBin = path.join(libDir, `deskthing-daemon`)
     console.log('Building Go daemon for', archSuffix, 'into', outBin)
     // Build within the daemon directory so go uses the daemon/go.mod file.
     // Pass GOOS/GOARCH through the environment so cross-compilation is used.
