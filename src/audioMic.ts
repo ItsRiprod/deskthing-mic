@@ -6,7 +6,9 @@ export class AudioMic {
   private state: AudioManagerState;
   private stream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
-  private processor: ScriptProcessorNode | null = null;
+  private processor: ScriptProcessorNode | AudioWorkletNode | null = null;
+  private mediaRecorder: MediaRecorder | null = null;
+
   private config: MicConfig = {};
 
   constructor(config: MicConfig = {}) {
@@ -63,20 +65,77 @@ export class AudioMic {
           channelCount: this.config.channelCount,
         },
       });
-      this.audioContext = new AudioContext({
+
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: this.config.sampleRate,
       });
+
       const source = this.audioContext.createMediaStreamSource(this.stream);
-      // Calculate buffer size and chunking
       const sampleRate = this.config.sampleRate || this.audioContext.sampleRate;
       const secondsPerChunk = this.config.secondsPerChunk || 0.1;
       const bufferSize = Math.pow(2, Math.ceil(Math.log2(sampleRate * secondsPerChunk)));
       const channelCount = this.config.channelCount || 1;
-      this.processor = this.audioContext.createScriptProcessor(bufferSize, channelCount, channelCount);
-      source.connect(this.processor);
-      this.processor.connect(this.audioContext.destination);
-      this.processor.onaudioprocess = (e) => {
-        // Interleave channels if needed
+      const bytesPerSample = this.config.bytesPerSample === 2 ? 2 : 4;
+      const wavSampleFormat: 'int16' | 'float32' = this.config.bytesPerSample === 2 ? 'int16' : 'float32';
+
+      // Prefer AudioWorklet if available
+      if (this.audioContext.audioWorklet && typeof AudioWorkletNode !== 'undefined') {
+        try {
+          const processorCode = `
+            class RecorderProcessor extends AudioWorkletProcessor {
+              process(inputs) {
+                const input = inputs[0];
+                if (input && input[0]) {
+                  // post Float32Array chunk to main thread
+                  const channelData = input[0];
+                  // clone buffer so main thread receives its own copy
+                  this.port.postMessage(channelData.slice());
+                }
+                return true;
+              }
+            }
+            registerProcessor('recorder-processor', RecorderProcessor);
+          `;
+
+          const blob = new Blob([processorCode], { type: 'application/javascript' });
+          const url = URL.createObjectURL(blob);
+          await this.audioContext.audioWorklet.addModule(url);
+          URL.revokeObjectURL(url);
+
+          // create worklet node
+          const awn = new AudioWorkletNode(this.audioContext, 'recorder-processor', {
+            numberOfInputs: 1,
+            numberOfOutputs: 0,
+            channelCount,
+          });
+          this.processor = awn;
+          awn.port.onmessage = (ev: MessageEvent) => {
+            const floatBuffer = ev.data as Float32Array;
+            this.handleFloat32Chunk(floatBuffer, sampleRate, channelCount, bytesPerSample, wavSampleFormat);
+          };
+
+          source.connect(awn);
+          // no need to connect awn to destination since it has no outputs
+          this.setState({ status: 'listening', error: '' });
+          return;
+        } catch (workletErr) {
+          // fall through to ScriptProcessor fallback
+          console.warn('AudioWorklet registration failed, falling back to ScriptProcessorNode:', workletErr);
+        }
+      }
+
+      // Fallback: ScriptProcessorNode (deprecated but widely supported)
+      const spNode = this.audioContext.createScriptProcessor(bufferSize, channelCount, channelCount);
+      this.processor = spNode;
+      source.connect(spNode);
+      // connect to destination only if you want to hear audio; otherwise connect to a dummy gain or don't connect
+      try {
+        // Some contexts require connecting to destination on certain platforms; keep it but it's harmless
+        spNode.connect(this.audioContext.destination);
+      } catch {
+        // ignore if connection not allowed
+      }
+      spNode.onaudioprocess = (e: AudioProcessingEvent) => {
         let output: Float32Array;
         if (channelCount === 1) {
           output = new Float32Array(e.inputBuffer.getChannelData(0));
@@ -90,45 +149,73 @@ export class AudioMic {
             }
           }
         }
-        // Convert to bytesPerSample if needed (default: Float32, else Int16)
-        let pcm: ArrayBuffer;
-        let bytesPerSample = this.config.bytesPerSample === 2 ? 2 : 4;
-        let wavSampleFormat: "int16" | "float32" = this.config.bytesPerSample === 2 ? 'int16' : 'float32';
-        if (bytesPerSample === 2) {
-          // Convert Float32 [-1,1] to Int16
-          const int16 = new Int16Array(output.length);
-          for (let i = 0; i < output.length; i++) {
-            int16[i] = Math.max(-32768, Math.min(32767, Math.floor(output[i] * 32767)));
-          }
-          pcm = int16.buffer;
-        } else {
-          // Float32 PCM
-          pcm = output.slice().buffer;
-        }
-
-        // WAV header
-        const wavBuffer = this.makeWavChunk(
-          pcm,
-          sampleRate,
-          channelCount,
-          bytesPerSample,
-          wavSampleFormat
-        );
-        if (this.packetHandler) {
-          this.packetHandler(wavBuffer);
-        }
-        // Helper to create a WAV chunk (header + PCM data)
-
-        this.setState({
-          audioChunks: this.state.audioChunks + 1,
-          bytesReceived: this.state.bytesReceived + wavBuffer.byteLength,
-        });
+        this.handleFloat32Chunk(output, sampleRate, channelCount, bytesPerSample, wavSampleFormat);
       };
+
       this.setState({ status: 'listening', error: '' });
     } catch (err: any) {
+      // As a last-resort fallback, try MediaRecorder if low-level access fails
+      if (this.stream && typeof MediaRecorder !== 'undefined') {
+        try {
+          this.mediaRecorder = new MediaRecorder(this.stream);
+          this.mediaRecorder.ondataavailable = async (e) => {
+            const buf = await e.data.arrayBuffer();
+            if (this.packetHandler) this.packetHandler(buf);
+            this.setState({
+              audioChunks: this.state.audioChunks + 1,
+              bytesReceived: this.state.bytesReceived + buf.byteLength,
+            });
+          };
+          this.mediaRecorder.start(1000);
+          this.setState({ status: 'listening', error: '' });
+          return;
+        } catch (mrErr) {
+          // fall through to error handling
+          console.warn('MediaRecorder fallback failed:', mrErr);
+        }
+      }
+
       this.setState({ status: 'error', error: err instanceof Error ? err.message : `Mic open failed! ${String(err)}` });
       console.error('Error opening mic:', err);
     }
+  }
+
+  private handleFloat32Chunk(
+    floatBuffer: Float32Array,
+    sampleRate: number,
+    channelCount: number,
+    bytesPerSample: number,
+    sampleFormat: 'int16' | 'float32'
+  ) {
+    // Convert to desired PCM format
+    let pcm: ArrayBuffer;
+    if (bytesPerSample === 2) {
+      const int16 = new Int16Array(floatBuffer.length);
+      for (let i = 0; i < floatBuffer.length; i++) {
+        int16[i] = Math.max(-32768, Math.min(32767, Math.floor(floatBuffer[i] * 32767)));
+      }
+      pcm = int16.buffer;
+    } else {
+      // ensure we copy the buffer so it's safe
+      pcm = new Float32Array(floatBuffer).buffer;
+    }
+
+    const wavBuffer = this.makeWavChunk(
+      pcm,
+      sampleRate,
+      channelCount,
+      bytesPerSample,
+      sampleFormat
+    );
+
+    if (this.packetHandler) {
+      this.packetHandler(wavBuffer);
+    }
+
+    this.setState({
+      audioChunks: this.state.audioChunks + 1,
+      bytesReceived: this.state.bytesReceived + wavBuffer.byteLength,
+    });
   }
 
   private makeWavChunk(
@@ -171,11 +258,22 @@ export class AudioMic {
 
   closeMic() {
     if (this.processor) {
-      this.processor.disconnect();
+      try {
+        // AudioWorkletNode or ScriptProcessorNode
+        (this.processor as any).disconnect();
+      } catch { }
       this.processor = null;
     }
+    if (this.mediaRecorder) {
+      try {
+        if (this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
+      } catch { }
+      this.mediaRecorder = null;
+    }
     if (this.audioContext) {
-      this.audioContext.close();
+      try {
+        this.audioContext.close();
+      } catch { }
       this.audioContext = null;
     }
     if (this.stream) {

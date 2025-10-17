@@ -11,6 +11,7 @@ class AudioManager {
   private wsUrl = 'ws://localhost:8890';
   private ready: Promise<'websocket' | 'mic' | 'unset'>;
   private config: MicConfig = {};
+  private micOpen: boolean = false
 
   private stateListeners: Set<StateListener> = new Set();
   private packetHandlers: Set<PacketHandler> = new Set();
@@ -85,15 +86,17 @@ class AudioManager {
 
   async openMic() {
     await this.ready;
-    if (this.backend) {
+    if (this.backend && !this.micOpen) {
       await this.backend.openMic(this.config);
+      this.micOpen = true;
     }
   }
 
   async closeMic() {
     await this.ready;
-    if (this.backend) {
-      this.backend.closeMic();
+    if (this.backend && this.micOpen) {
+      await this.backend.closeMic();
+      this.micOpen = false;
     }
   }
 
