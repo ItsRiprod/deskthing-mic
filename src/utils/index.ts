@@ -268,5 +268,73 @@ export async function install(
     await cleanupFiles(daemonPath, root);
   }
 }
+export async function uninstall(
+  config: InstallConfig,
+  logger: InstallLogger
+): Promise<void> {
+  const {
+    adbPath = "adb",
+    root = resolve(__dirname_fallback, "../lib/"),
+    skipConf = false,
+    daemonPath: providedDaemonPath,
+  } = config;
 
-export default install;
+  const daemonPath = providedDaemonPath ?? resolve(root, "deskthing-daemon");
+
+  logger("Starting uninstallation of deskthing-daemon...");
+
+  try {
+    if (!skipConf) {
+      logger("Stopping deskthing-daemon via supervisorctl...");
+      try {
+        await execFileLogged(adbPath, [
+          "shell",
+          "supervisorctl",
+          "stop",
+          "deskthing-daemon",
+        ]);
+      } catch (e) {
+        // stopping may fail if it's not running; continue
+        logger("Warning stopping deskthing-daemon failed (may not be running).", e);
+      }
+
+      logger("Pulling supervisord.conf from device...");
+      await pullSupervisorConf(adbPath, root);
+
+      logger("Removing [program:deskthing-daemon] block from supervisord.conf...");
+      const confPath = resolve(root, "supervisord.conf");
+      let conf = await fs.readFile(confPath, "utf-8");
+      // remove the program block for deskthing-daemon
+      conf = conf.replace(/\[program:deskthing-daemon\][\s\S]*?(?=\n\[|$)/g, "");
+      await fs.writeFile(confPath, conf, "utf-8");
+
+      logger("Pushing updated supervisord.conf to device...");
+      await pushSupervisorConf(adbPath, root);
+
+      logger("Reloading supervisor configuration...");
+      await execFileLogged(adbPath, ["shell", "supervisorctl", "reread"]);
+      await execFileLogged(adbPath, ["shell", "supervisorctl", "update"]);
+    } else {
+      logger("Skipping supervisor configuration changes as per config.");
+    }
+
+    logger("Removing deskthing-daemon binary from device...");
+    try {
+      await execFileLogged(adbPath, ["shell", "rm", "-f", "/usr/bin/deskthing-daemon"]);
+    } catch (e) {
+      // if removal fails, log but continue to cleanup local files
+      logger("Failed to remove deskthing-daemon from device.", e);
+    }
+  } catch (error) {
+    logger("Uninstallation failed.", error);
+    throw error;
+  } finally {
+    logger("Cleaning up temporary files...");
+    // attempt to remove local pulled supervisord.conf and local daemon (if present)
+    try {
+      await cleanupFiles(daemonPath, root);
+    } catch (e) {
+      logger("Cleanup failed.", e);
+    }
+  }
+}
